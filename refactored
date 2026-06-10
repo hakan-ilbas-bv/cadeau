@@ -399,7 +399,8 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 }
 
                 // Check platform info
-                int platformResult = CfGetPlatformInfo(out CF_PLATFORM_INFO _);
+                CF_PLATFORM_INFO platformInfo;
+                int platformResult = CfGetPlatformInfo(out platformInfo);
                 if (platformResult < 0)
                 {
                     LogError("Failed to get platform info: " + platformResult);
